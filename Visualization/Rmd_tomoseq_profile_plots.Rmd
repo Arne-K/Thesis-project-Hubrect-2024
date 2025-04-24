@@ -1,0 +1,473 @@
+---
+title: "Tomoseq profile count plots"
+author: "Arne Kukkonen"
+date: "2025-01-15"
+output: html_document
+---
+
+This script visualizes the counts of selected genes in profile across all slices, per conditon, per sample. The counts are normalized with the median-of-ratios method, across all samples within single species (Sham + MI14D condition). The genes are chosen as marker genes based on literature, to identify the 3 regions of post-MI remodeling (remote zone, border zone, infarct/fibrotic zone). 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(patchwork)
+```
+
+Directory paths
+```{r}
+script_input_dir <- "./input_datasets/"
+marker_gene_dir <- paste0(script_input_dir, "marker_genes/")
+
+script_output_dir <- "./output_dir/"
+if (!dir.exists(script_output_dir)) {
+  dir.create(script_output_dir)
+}
+
+rdata_output_dir <- "./plots_rdata/"
+if (!dir.exists(rdata_output_dir)) {
+  dir.create(rdata_output_dir)
+}
+```
+
+Function for loading the normalized count data
+```{r}
+load_counts <- function(file_path) {
+  counts <- readRDS(file_path) %>%
+    as.data.frame() %>%
+    round(., digits = 1) %>%
+    rownames_to_column("Gene_EnsID")
+  return(counts)
+}
+```
+
+To do it with count data that has been normalized separately per-species
+```{r}
+mm_counts <- load_counts(paste0(script_input_dir, "MM_Tomoseq_counts_1-1orth_normalized.RData"))
+ac_counts <- load_counts(paste0(script_input_dir, "AC_Tomoseq_counts_1-1orth_normalized.RData"))
+```
+
+Load the marker gene data
+```{r}
+# Function for loading the marker gene data 
+load_markers <- function(file_path) {
+  markers <- read_excel(file_path) %>%
+    filter(!if_all(everything(), is.na), str_starts(Acomys_EnsID, "ENSACHG")) %>%
+    select(-Gene_name, -Acomys_EnsID, -Source) %>%
+    fill(Classification, .direction = "down")
+    
+}
+
+bz_markers <- load_markers(paste0(marker_gene_dir, "border_zone_markers.xlsx"))
+fz_markers <- load_markers(paste0(marker_gene_dir, "fibrotic_zone_markers.xlsx"))
+cm_markers <- load_markers(paste0(marker_gene_dir, "cardiomyocyte_markers.xlsx"))
+```
+
+Filter the count data to only contain the required genes
+```{r}
+marker_genes <- c(bz_markers$Mus_EnsID, fz_markers$Mus_EnsID, cm_markers$Mus_EnsID)
+mm_counts <- mm_counts %>% filter(Gene_EnsID %in% marker_genes)
+ac_counts <- ac_counts %>% filter(Gene_EnsID %in% marker_genes)
+rm(marker_genes)
+```
+
+Functions to create the plot data 
+```{r}
+# Function to get the sample numbers to define sample 1 and sample 2 on the plot. 
+format_sample_numbers <- function(data, sample_condition) {
+  data_fmt <- data %>%
+    filter(Condition == sample_condition) %>%
+    mutate(
+      Replicate = if_else(Replicate == max(Replicate), 2, 1)
+    )
+  return(data_fmt)
+}
+
+
+prepare_plot_data <- function(count_data, marker_data) {
+  plot_data <- count_data %>%
+    inner_join(., marker_data, by = join_by(Gene_EnsID == Mus_EnsID)) %>%
+    select(-Gene_EnsID, -Classification) %>%
+    relocate(Gene_symbol) %>%
+    pivot_longer(., cols = -Gene_symbol, names_to = "Sample_name", values_to = "Expression") %>%
+    mutate(
+      Species = str_extract(Sample_name, "^[A-Z]{2}"),
+      Slice = as.numeric(str_extract(Sample_name, "(?<=\\.slice)\\d+")),
+      Condition = str_extract(Sample_name, "(?<=_)[A-Z0-9]+(?=\\.)"),
+      Replicate = str_extract(Sample_name, "(?<=\\.)\\d+(?=\\.)"),
+      Replicate = as.numeric(Replicate)
+      )
+  
+  # Transform the sample replicate numbers to either 1 or 2
+  sham_fmt <- format_sample_numbers(plot_data, "SHAM")
+  mi14d_fmt <- format_sample_numbers(plot_data, "MI14D")
+  plot_data <- rbind(sham_fmt, mi14d_fmt)
+  
+  return(plot_data)
+
+}
+```
+
+Function to create a plot for a single species counts (Sham + MI14D)
+```{r}
+profile_plot <- function(count_data, marker_data, y_max, top_plot = TRUE, plot_title) {
+  # Prepare plot data
+  plot_data <- prepare_plot_data(count_data = count_data, marker_data = marker_data)
+  species <- if_else(unique(plot_data$Species)=="MM", "M. musculus", false = "A. cahirinus")
+  
+  plot_data <- plot_data %>%
+    mutate(
+      Replicate_label = if_else(
+        Condition == "SHAM",
+        "Sham replicates",                  # one label for all SHAM lines
+        paste("MI day 14 rep.", sprintf("%02d", Replicate))  # label e.g. "MI day 14 rep. 01"
+      )
+    )
+  
+  # Create plot base
+  p <- ggplot(
+    plot_data,
+    aes(
+      x = Slice,
+      y = Expression,
+      color = Replicate_label,
+      linetype = Replicate_label,
+      group = interaction(Condition, Replicate)  # keep lines separate
+    )
+  )
+  
+  # Add the zone labels to top plot only
+  if (top_plot) {
+    p <- p + annotate("text",
+            x = 16.2,
+            y = y_max * 1.02,
+            label = "Infarct zone",
+            hjust = 0,
+            fontface = "bold.italic",
+            size = 6,
+            color = "#FA8D76"
+          ) +
+          annotate("text",
+            x = 11.2,
+            y = y_max * 1.02,
+            label = "Mus border zone",
+            hjust = 0,
+            fontface = "bold.italic",
+            size = 6,
+            color = "#F5A040"
+          )
+  }
+
+  p <- p +
+    # Add infarct zone highlight 
+    annotate("rect", 
+         xmin = 16, xmax = 24,
+         ymin = -Inf, ymax = Inf,
+         alpha = 0.5,  # Controls transparency
+         fill = "#FEB1A3"
+    ) +
+    # Add border zone highlight 
+    annotate("rect", 
+         xmin = 11, xmax = 15,
+         ymin = -Inf, ymax = Inf,
+         alpha = 0.5,  # Controls transparency
+         fill = "#FFC685"
+    ) +
+    
+    # Add the sample count lines
+    geom_line(aes(alpha = Replicate_label, linewidth = Replicate_label)) +
+    
+    # Set the color for each sample line
+    scale_colour_manual(
+      values = c(
+        "MI day 14 rep. 01" = "#B57FA4",
+        "MI day 14 rep. 02" = "#49A4B9",
+        "Sham replicates"   = "gray50"
+      ),
+      name = "Samples"
+    ) +
+    # Set line width for every sample
+    scale_linewidth_manual(
+    values = c(
+        "MI day 14 rep. 01" = 1.2,
+        "MI day 14 rep. 02" = 1.2,
+        "Sham replicates"   = 1.5
+      ),
+      guide = "none"  # Hide from legend if you don't want it shown
+    ) +
+    # Set line type for every sample
+    scale_linetype_manual(
+      values = c(
+        "MI day 14 rep. 01" = "solid",
+        "MI day 14 rep. 02" = "solid",
+        "Sham replicates"   = "11"
+      ),
+      guide = "none"  # Hide the linetype legend
+    ) +
+    # Set line transparency for every sample
+    scale_alpha_manual( 
+      values = c(
+        "MI day 14 rep. 01" = 1,
+        "MI day 14 rep. 02" = 1,
+        "Sham replicates"   = 0.8
+      ),
+      guide = "none"  # Hide alpha from legend
+    ) +
+    
+    # Set the x-axis breaks to represent the Tomo-seq slices
+    scale_x_continuous(breaks = seq(1, 24, 1), limits = c(1, 24), expand = expansion(add = c(0.3, 0.3))) +
+    scale_y_continuous(limits = c(0, y_max*1.05)) +
+    theme_bw() +
+    labs(x = "Tomo-seq slice", y = "Normalized read count") +
+    annotate("text",
+      x = 1,  # position at first slice
+      y = y_max * 1.04,  # position near top of plot
+      label = species,
+      hjust = 0,  # left-align text
+      fontface = "bold.italic",
+      size = 6,  # equivalent to 18pt
+      color = "gray25"
+    ) +
+    theme(
+      # Only show legend for the top plot
+      legend.position = if_else(top_plot, "right", "none"),
+      legend.title = element_text(size = 18, face = "bold"),  # Added: increase legend title size
+      legend.text = element_text(size = 18),
+      
+      # Grid lines
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(linewidth = 1.1, color = "gray90"),
+      
+      # Show x axis text and label only for the bottom plot
+      axis.title.x = if(top_plot) element_blank() else element_text(size = 18, vjust = -1),
+      axis.text.x = if(top_plot) element_blank() else element_text(angle = 0, vjust = 0.6, size = 16, face = "bold"),
+      axis.ticks.x = if(top_plot) element_blank() else element_line(),
+      
+      # Show y axis label only for the top plot
+      # axis.title.y = if(top_plot) element_text(size = 18, vjust = 1, hjust = -0.2) else element_blank(),
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 14, face = "bold", colour = "grey40"),
+      
+      # Panel border
+      panel.border = element_rect(color = "grey15", fill = NA, linewidth = 1),
+      
+      plot.title = element_text(size = 22, colour = "grey30", face = "bold")
+      
+      #plot.margin = margin(t = 15, r = 15, b = 15, l = 15, unit = "pt")
+    )
+  
+  p <- p + guides(
+    color = guide_legend(
+        override.aes = list(linewidth = 2, linetype = c("solid", "solid", "11")),
+        keywidth = unit(2, "cm"),
+        keyheight = unit(1.5, "lines"),
+    )
+  )
+  
+  p <- p + ggtitle(if (!top_plot) NULL else plot_title)
+  
+  return(p)
+}
+```
+
+Function to iteratively create profile plots for every marker in every category
+```{r}
+create_marker_plots <- function(mouse_counts, acomys_counts, marker_data, zone) {
+  # Create an output directory for the zone 
+  out_zone_dir <- paste0(script_output_dir, zone)
+  dir.create(out_zone_dir, recursive = TRUE)
+  
+  # Define the marker classes for the zone 
+  marker_classes <- unique(marker_data$Classification)
+  
+  # Iterate through all marker classes
+  for (i in 1:length(marker_classes)) {
+    
+    # Define the current class
+    input_class <- marker_classes[i]
+    
+    # Create the output directory for a single marker class
+    out_dir <- paste0(out_zone_dir, "/", input_class, "/")
+    dir.create(out_dir, recursive = TRUE)
+    
+    # Define the genes in a class
+    genes_in_class <- marker_data %>%
+      filter(Classification == input_class) %>%
+      pull(Gene_symbol)
+    
+    # Iterate through the genes
+    for (j in 1:length(genes_in_class)) {
+      
+      input_gene <- genes_in_class[j]
+      
+      # Subset the marker data for the input gene
+      input_marker_data <- marker_data %>%
+        filter(Gene_symbol == input_gene)
+      
+      # Define the maximum y value (count) to create a matching scale between both plots
+      mus_max_count <- mouse_counts %>% filter(Gene_EnsID == input_marker_data$Mus_EnsID) %>%
+        summarise(max_value = max(across(-Gene_EnsID))) %>%
+        pull()
+      acomys_max_count <- acomys_counts %>% filter(Gene_EnsID == input_marker_data$Mus_EnsID) %>%
+        summarise(max_value = max(across(-Gene_EnsID))) %>%
+        pull()
+      max_count <- max(mus_max_count, acomys_max_count)
+      
+      # Create a plot for each species with the filtered marker data
+      plot_mouse <- profile_plot(count_data = mouse_counts, marker_data = input_marker_data, 
+                                 y_max = max_count, plot_title = input_gene)
+      
+      plot_acomys <- profile_plot(count_data = acomys_counts, marker_data = input_marker_data, 
+                                  y_max = max_count, plot_title = input_gene, top_plot = FALSE)
+      
+      # Stack the plots on top of one another and add the marker gene symbol as title
+      plot_combined <- plot_mouse / plot_acomys
+      
+      saveRDS(plot_combined, paste0(rdata_output_dir, input_gene, ".RData"))
+      # If you want border around the combined plot, add this to theme()
+      #plot.background = element_rect(color = "black", linewidth = 2, fill = NA)
+      
+      # save the plot
+      out_path <- paste0(out_dir, input_gene, "_marker_profile.png")
+      ggsave(plot = plot_combined, filename = out_path, width = 20, height = 9)
+    }
+  }
+}
+```
+
+Create the profile plots for every zone
+```{r}
+create_marker_plots(mouse_counts = mm_counts, acomys_counts = ac_counts, marker_data = cm_markers, zone = "remote_zone")
+create_marker_plots(mouse_counts = mm_counts, acomys_counts = ac_counts, marker_data = bz_markers, zone = "border_zone")
+create_marker_plots(mouse_counts = mm_counts, acomys_counts = ac_counts, marker_data = fz_markers, zone = "infarct_zone")
+```
+
+### Select markers to combine into a single figure
+```{r}
+fz_selected <- c("Col1a1", "Col3a1", "Bgn", "Lum")
+bz_selected <- c("Myh7", "Des", "Nppa", "Xirp2")
+rz_selected <- c("Myh6", "Tnnc1", "Atp2a2", "Ryr2")
+```
+
+List the plot files for every category and combine under a single letter. Then combine these under a single figure name
+```{r}
+# Function to get the list of plot files of the selected markers
+get_plot_list <- function(marker_vector) {
+  plot_list <- list()
+  for (i in 1:length(marker_vector)) {
+    marker_gene <- marker_vector[i]
+    file_path <- paste0(rdata_output_dir, marker_gene, ".RData")
+    plot_file <- readRDS(file_path)
+    plot_list[[marker_gene]] <- plot_file
+  }
+  return(plot_list)
+}
+```
+
+
+Fibrotic zone figure
+```{r}
+fz_plot_list <- get_plot_list(fz_selected)
+fz_figure <- wrap_plots(fz_plot_list, ncol = 2) +
+  plot_layout(guides = 'collect') +
+  plot_annotation(
+    title = "Fibrotic zone markers",
+    theme = theme(
+      # Make the title larger and bold
+      plot.title = element_text(size = 26, face = "bold", hjust = 0),
+      # Add a black border around the combined figure
+      plot.background = element_rect(
+        color = "grey50", 
+        linewidth = 1, 
+        fill = NA
+      )
+    )
+  )
+
+# Save with adjusted dimensions for better visibility
+ggsave("fz_figure.png", 
+       fz_figure,
+       width = 27,  # Increased width slightly
+       height = 15, # Increased height to accommodate all plots
+       units = "in",
+       dpi = 100)
+```
+
+Border zone figure
+```{r}
+bz_plot_list <- get_plot_list(bz_selected)
+bz_figure <- wrap_plots(bz_plot_list, ncol = 2) +
+  plot_layout(guides = 'collect') +
+  plot_annotation(
+    title = "Border zone markers",
+    theme = theme(
+      # Make the title larger and bold
+      plot.title = element_text(size = 26, face = "bold", hjust = 0),
+      # Add a black border around the combined figure
+      plot.background = element_rect(
+        color = "grey50", 
+        linewidth = 1, 
+        fill = NA
+      )
+    )
+  )
+
+# Save with adjusted dimensions for better visibility
+ggsave("bz_figure.png", 
+       bz_figure,
+       width = 27,  # Increased width slightly
+       height = 15, # Increased height to accommodate all plots
+       units = "in",
+       dpi = 100)
+```
+
+Remote zone figure
+```{r}
+rz_plot_list <- get_plot_list(rz_selected)
+rz_figure <- wrap_plots(rz_plot_list, ncol = 2) +
+  plot_layout(guides = 'collect') +
+  plot_annotation(
+    title = "Remote zone markers",
+    theme = theme(
+      # Make the title larger and bold
+      plot.title = element_text(size = 26, face = "bold", hjust = 0),
+      # Add a black border around the combined figure
+      plot.background = element_rect(
+        color = "grey50", 
+        linewidth = 1, 
+        fill = NA
+      )
+    )
+  )
+
+# Save with adjusted dimensions for better visibility
+ggsave("rz_figure.png", 
+       rz_figure,
+       width = 27,  # Increased width slightly
+       height = 15, # Increased height to accommodate all plots
+       units = "in",
+       dpi = 100)
+```
+
+combine all
+```{r}
+# Combine the 3 sub-figures without losing each figure's own border & title
+combined_figure <- 
+  wrap_elements(full = fz_figure) /  # use '/' to stack vertically
+  wrap_elements(full = bz_figure) /
+  wrap_elements(full = rz_figure)
+
+# (Optional) If you also want a grand title or other top-level annotations,
+# you can add another plot_annotation() call here:
+combined_figure <- combined_figure + 
+  plot_annotation(
+    caption = "Figure x",  # Using caption instead of title
+    theme = theme(
+      plot.caption = element_text(size = 30, face = "bold", hjust = 0)
+    )
+  )
+
+# Finally, save
+ggsave("all_zones.png", combined_figure, 
+       width = 27, height = 35, units = "in", dpi = 100)
+```

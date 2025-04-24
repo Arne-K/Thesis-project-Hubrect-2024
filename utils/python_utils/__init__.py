@@ -4,12 +4,8 @@ from .workflow_path_utils import (
     datasets_dir,
     raw_reads_dir, 
     qc_reads_dir, 
-    report_dir, 
     log_dir,
-    demultiplex_dir, 
     tools_dir, 
-    corrected_bcode_dir, 
-    bcode_fail_dir,
     barcode_list_file, 
     bcode_permut_dict_file,
     # tool paths 
@@ -21,7 +17,10 @@ from .workflow_path_utils import (
 )
 
 from .command_utils import execute_command
-from .barcode_processing_utils import read_barcode_file, barcode_info_from_filename
+
+from .barcode_processing_utils import \
+    read_barcode_file, \
+    barcode_info_from_filename
 
 from .file_management_utils import \
     compression_utility, \

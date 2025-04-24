@@ -6,7 +6,7 @@ if utils_dir.name != "utils":
 
 # --- Main directory paths ---
 workflow_dir = utils_dir.parent
-datasets_dir = workflow_dir / "datasets"
+datasets_dir = workflow_dir / "Tomoseq_datasets"
 #
 # Input/Output Directory Paths
 # ----------------------------
