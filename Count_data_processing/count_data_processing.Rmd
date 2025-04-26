@@ -1,0 +1,140 @@
+---
+title: "Count data processing"
+output:
+  html_document:
+    df_print: paged
+    css: ../resources/styles.css
+---
+```{r setup, include = FALSE}
+library(tidyverse)
+```
+
+This notebook contains the instructions to process the count matrix output from the STAR-RSEM pipeline.
+The outputs from this script are:
+
+* Unnormalized counts with the full species-specific gene set (without orthologs)
+* Unnormalized counts with one-to-one orthologs
+
+The counts are normalized with DESeq2 in the server outside this notebook. The normalized counts are then further processed here to get:
+
+* Normalized counts both with species-specific gene set and orthologs
+* Per-slice average normalized counts. 
+* Z-score transformed normalized counts. The transformation is done across all conditions/slices within a single species.
+
+Input data
+```{r}
+orthologs <- readRDS("../../datasets/gene_orthologs/Mus-Acomys_OrthoFinder_1to1_orthologs_wSymbols.RData")
+unnorm_counts_dir <- "../../datasets/gene_counts/un-normalized_counts/"
+star_rsem_counts_paths <- list.files(path = paste0(unnorm_counts_dir, "STAR-RSEM_output/"), full.names = TRUE)
+```
+
+#### Functions
+```{r}
+#Function for processing the unnormalized gene counts
+format_unnorm_counts <- function(file_path, output_dir_path = unnorm_counts_dir) {
+  file_name <- basename(file_path)
+  sample_prefix <- gsub("^(.+?)_gene_counts_.*$", "\\1", file_name)
+  
+  unnorm_counts <- read.delim(file_path) %>%
+    rownames_to_column("Gene_EnsID") %>%
+    mutate(Gene_EnsID = str_remove(Gene_EnsID, "gene:"))
+  
+  write_tsv(unnorm_counts, paste0(output_dir_path, sample_prefix, "_STAR-RSEM_un-normalized.tsv"))
+}
+
+# Function for creating the unnormalized counts with 1-1 orthologs
+format_ortholog_counts <- function(file_path, ortholog_data = orthologs, output_dir_path = unnorm_counts_dir) {
+  
+  # Fetch species symbol and file prefix from the file path string
+  file_name <- basename(file_path)
+  species <- gsub("^([A-Za-z]+)_.*$", "\\1", file_name)
+  if (!(species %in% c("MM", "AC"))) {
+    stop("Accepted species symbols: MM, AC")
+  }
+  sample_prefix <- gsub("^(.+?)_STAR-RSEM_.*$", "\\1", file_name)
+  
+  # Format to ortholog counts according to species
+  count_data <- read.delim(file_path)
+  if (species == "AC") {
+    count_data_orthologs <- count_data %>%
+      inner_join(., ortholog_data, by = join_by(Gene_EnsID == Acomys_EnsID)) %>%
+      select(-Gene_EnsID) %>%
+      rename(Gene_EnsID = Mus_EnsID) %>%
+      relocate(Gene_symbol, Gene_EnsID)
+  
+  } else if (species == "MM") {
+    count_data_orthologs <- count_data %>%
+      inner_join(., ortholog_data, by = join_by(Gene_EnsID == Mus_EnsID)) %>%
+      select(-Acomys_EnsID)
+  
+  } else {
+    stop("Unknown species symbol")
+  }
+  
+  # Save
+  write_tsv(count_data_orthologs, 
+            paste0(output_dir_path, "un-normalized_counts_1-1orth/", sample_prefix, "_STAR-RSEM_un-normalized_1-1orth.tsv")
+            )
+}
+
+# Function to combine unnormalized counts
+combine_dir_count_files <- function(file_paths, with_orthologs = FALSE) {
+  # Read all files into a file list
+  file_list <- lapply(file_paths, function(path) {
+    read.delim(path) 
+    })
+  
+  # Start with the first file and iteratively join the remaining files
+  combined_data <- file_list[[1]]
+  for (i in 2:length(file_list)) {
+    
+    if (with_orthologs){
+      combined_data <- inner_join(combined_data, file_list[[i]], by = c("Gene_EnsID", "Gene_symbol"))
+    }
+    
+    if (!with_orthologs) {
+      combined_data <- inner_join(combined_data, file_list[[i]], by = c("Gene_EnsID"))
+    }
+    
+  }
+  return(combined_data)
+}
+```
+
+Process the un-normalized counts per replicate
+```{r}
+
+# Unnormalized counts without orthologs
+for (file_path in star_rsem_counts_paths) {
+  format_unnorm_counts(file_path = file_path)
+}
+rm(file_path)
+
+# Unnormalized counts with orthologs
+unnorm_counts_paths <- list.files(path = unnorm_counts_dir, pattern = ".tsv$", full.names = TRUE)
+for (file_path in unnorm_counts_paths) {
+  format_ortholog_counts(file_path = file_path)
+}
+rm(file_path)
+```
+
+Combine counts per species
+```{r}
+mus_unnorm_counts <- list.files(path = unnorm_counts_dir, pattern = "^MM", full.names = TRUE) %>%
+  combine_dir_count_files() %>%
+  saveRDS(paste0(unnorm_counts_dir, "Mus_STAR-RSEM_un-normalized.RData"))
+  
+mus_unnorm_ortholog_counts <- list.files(path = paste0(unnorm_counts_dir, "un-normalized_counts_1-1orth/"), pattern = "^MM", full.names = TRUE) %>%
+  combine_dir_count_files(., with_orthologs = TRUE) %>%
+  saveRDS(., paste0(unnorm_counts_dir, "un-normalized_counts_1-1orth/", "Mus_STAR-RSEM_un-normalized_1-1orth.RData"))
+
+acomys_unnorm_counts <- list.files(path = unnorm_counts_dir, pattern = "^AC", full.names = TRUE) %>%
+  combine_dir_count_files() %>%
+  saveRDS(., paste0(unnorm_counts_dir, "Acomys_STAR-RSEM_un-normalized.RData"))
+  
+acomys_unnorm_ortholog_counts <- list.files(path = paste0(unnorm_counts_dir, "un-normalized_counts_1-1orth/"), pattern = "^AC", full.names = TRUE) %>%
+  combine_dir_count_files(., with_orthologs = TRUE) %>%
+  saveRDS(., paste0(unnorm_counts_dir, "un-normalized_counts_1-1orth/", "Acomys_STAR-RSEM_un-normalized_1-1orth.RData"))
+```
+
+Work with normalized counts
