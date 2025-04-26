@@ -1,0 +1,276 @@
+---
+title: "Median of ratios normalization visualization"
+author: "Arne Kukkonen"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dendextend)
+```
+
+Load the raw un-normalized counts
+```{r}
+input_dir <- "datasets/Un-normalized_counts/"
+mm_counts <- readRDS(paste0(input_dir, "MM_Tomoseq_counts_1-1orth_unnorm.RData"))
+ac_counts <- readRDS(paste0(input_dir, "AC_Tomoseq_counts_1-1orth_unnorm.RData"))
+```
+
+###Subset the sample groups
+
+Functions to subset the sample groups
+```{r}
+# Function to subset slice intervals
+slice_subset <- function(data, slice_numbers) {
+    data_sub_slices <- data %>% 
+      select(GeneID, matches(paste0("\\.slice(", paste(slice_numbers, collapse="|"), ")$")))
+    return(data_sub_slices)
+}
+
+# Function to subset counts based on condition and slice numbers
+sample_subset <- function(data, cond_pattern, slice_numbers) {
+  data_sub <- data %>%
+    select(GeneID, matches(cond_pattern)) %>%
+    slice_subset(., slice_numbers = slice_numbers)
+  return(data_sub)
+}
+```
+
+Create count subsets for both species
+```{r}
+# Define slice zone intervals
+fibrotic_slices <- c(16:24)
+remote_slices <- c(1:13)
+sham_slices <- c(1:24)
+
+# Mus samples
+mm_fibrotic <- sample_subset(mm_counts, cond_pattern = "MI14D", slice_numbers = fibrotic_slices)
+mm_remote <- sample_subset(mm_counts, cond_pattern = "MI14D", slice_numbers = remote_slices)
+mm_sham <- sample_subset(mm_counts, cond_pattern = "SHAM", slice_numbers = sham_slices)
+
+# Acomys samples
+ac_fibrotic <- sample_subset(ac_counts, cond_pattern = "MI14D", slice_numbers = fibrotic_slices)
+ac_remote <- sample_subset(ac_counts, cond_pattern = "MI14D", slice_numbers = remote_slices)
+ac_sham <- sample_subset(ac_counts, cond_pattern = "SHAM", slice_numbers = sham_slices)
+```
+
+### meta data
+Function to create meta data
+```{r}
+get_meta <- function(count_data) {
+  
+  sample_names <- count_data %>%
+    select(-GeneID) %>%
+    colnames()
+  
+  sample_conditions <- str_extract(sample_names, "(?<=_).*?(?=\\.)")
+  sample_species <- str_extract(sample_names, "^[A-Z]{2}")
+  
+  meta_data <- data.frame(row.names = sample_names, Condition = sample_conditions, Species = sample_species)
+  
+  # Add the zone annotation based on condition and slice numbers
+  meta_data <- meta_data %>%
+    mutate(
+      Zone = if_else(
+        Condition == "MI14D" & between(as.numeric(str_extract(rownames(.), "\\d+$")), 16, 24),
+        true = "Fibrotic", false = "Sham"),
+      Zone = if_else(
+        Condition == "MI14D" & between(as.numeric(str_extract(rownames(.), "\\d+$")), 1, 13),
+        true = "Remote", false = Zone),
+      )
+  
+  return(meta_data)
+}
+```
+
+Create sample metadata for species, experimental condition and the MI zone. 
+```{r}
+# Combine the dataset
+combined_counts <- mm_fibrotic %>%
+  # Mus samples
+  inner_join(., mm_sham, by = join_by(GeneID)) %>%
+  # Acomys samples
+  inner_join(., ac_fibrotic, by = join_by(GeneID)) %>%
+  inner_join(., ac_sham, by = join_by(GeneID))
+
+meta_data <- get_meta(combined_counts)
+```
+
+Normalize the counts
+```{r}
+# Normalize counts for clustering
+cc <- combined_counts %>%
+  column_to_rownames("GeneID") %>%
+  edgeR::cpm() %>%
+  log1p()
+  #(function(x) x/1e5)
+
+if(!all.equal(rownames(meta_data), colnames(cc))) {
+  stop("row names of meta and column names of counts do not match")
+} else {
+  print("check passed")
+}
+```
+Create meta data color mapping for the color bar
+```{r}
+# Create meta data color mapping for the color bar
+species_colors <- c("MM" = "#33608C", 
+                    "AC" = "#8867A1") 
+species_color_vector <- species_colors[meta_data$Species]
+zone_colors <- c("Fibrotic" = "#CA3B43",
+                 "Remote"  = "#F5B355",
+                 "Sham" = "#C7C9CA")
+zone_color_vector <- zone_colors[meta_data$Zone]
+color_matrix <- cbind(species_color_vector, zone_color_vector)
+```
+
+Run clustering on the samples
+```{r}
+# Calculate distances among samples (columns)
+dist_mat <- dist(t(cc), method = "euclidean")
+
+# Perform hierarchical clustering
+hc <- hclust(dist_mat, method = "complete")
+```
+
+Plot the dendrogram with species
+```{r}
+# Open PNG device - specify file name and dimensions
+png("dendrogram_sham.png", width = 800, height = 650, res = 200)  # You can adjust width/height as needed
+
+# Convert hclust to dendrogram
+dend <- as.dendrogram(hc)
+
+# Get species in dendrogram order
+variable_ordered <- meta_data$Species[order.dendrogram(dend)]
+
+# Create integer clusters (1 for MM, 2 for AC)
+variable_clusters <- as.numeric(factor(variable_ordered))
+
+# Color branches using these clusters
+dend <- color_branches(dend,
+                      clusters = variable_clusters,  # Integer vector matching leaf order
+                      col = c("#33608C", "#8867A1"),  # Colors for MM and AC respectively
+                      warn = TRUE)
+
+dend <- dend %>% 
+  set("branches_lwd", 1.1)
+
+# set("branches_k_color", value = c("#33608C", "#33608C", "#8867A1"), k = 3) 
+
+par(
+  mar = c(4, 1, 0, 1),
+  mgp = c(1.3, 0.2, 0)
+)
+
+plot(dend, xlab = expression("log(CPM)"), leaflab = "none", 
+     cex.lab = 0.7, cex.axis = 0.6, horiz = TRUE)
+
+colored_bars(
+  colors    = color_matrix, 
+  dend      = dend,
+  rowLabels = c("Species", "Condition"),
+  cex.rowLabels = 0.6,
+  y_shift   = 3.5,
+  horiz = TRUE
+)
+
+# Close the PNG device
+dev.off()
+```
+Distance between fibrotic zone from Acomys with Mus samples
+```{r}
+# Combine the dataset
+combined_counts <- mm_fibrotic %>%
+  inner_join(., mm_sham, by = join_by(GeneID)) %>%
+  inner_join(., ac_fibrotic, by = join_by(GeneID))
+
+meta_data <- get_meta(combined_counts)
+```
+
+Distance between sham zone from Acomys with Mus samples
+```{r}
+# Combine the dataset
+combined_counts <- mm_fibrotic %>%
+  inner_join(., mm_sham, by = join_by(GeneID)) %>%
+  inner_join(., ac_sham, by = join_by(GeneID))
+
+meta_data <- get_meta(combined_counts)
+```
+
+Legend
+```{r}
+library(ggplot2)
+library(cowplot, quietly = TRUE)
+```
+
+Species legend
+```{r}
+# Create dummy data and plot
+dummy_data <- data.frame(
+  x = 1:2,
+  y = 1:2,
+  group = c("M. musculus", "A. cahirinus")
+)
+
+p <- ggplot(dummy_data, aes(x = x, y = y, color = group)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(
+    "M. musculus" = "#33608C", 
+    "A. cahirinus" = "#8867A1"
+  )) +
+  theme_void() +
+ theme(
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.margin = margin(0, 0, 0, 0),
+    legend.text = element_text(face = "italic")
+  ) +
+  labs(color = "Species")
+
+# Extract legend using the correct position
+legend <- get_plot_component(p, "guide-box-bottom")
+
+# Create new plot with just the legend
+g <- ggdraw(legend)
+
+# Save the legend
+ggsave("species_legend.png", g, width = 5, height = 0.8, bg = "white")
+```
+
+Zone legend
+```{r}
+# Create dummy data and plot
+dummy_data <- data.frame(
+  x = 1:2,
+  y = 1:2,
+  group = c("Fibrotic MI region", "Sham condition")
+)
+
+p <- ggplot(dummy_data, aes(x = x, y = y, color = group)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(
+    "Fibrotic MI region" = "#CA3B43",
+    "Sham condition" = "#C7C9CA"
+  )) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.margin = margin(0, 0, 0, 0)
+  ) +
+  labs(color = "Condition")
+
+# Extract legend using the correct position
+legend <- get_plot_component(p, "guide-box-bottom")
+
+# Create new plot with just the legend
+g <- ggdraw(legend)
+
+# Save the legend
+ggsave("condition_legend.png", g, width = 5, height = 0.8, bg = "white")
+```

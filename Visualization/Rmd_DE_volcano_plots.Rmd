@@ -1,0 +1,381 @@
+---
+title: "DESeq2 volcano plots"
+author: "Arne Kukkonen"
+date: "2025-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggtext)
+```
+
+Define input data
+```{r}
+ortholog_genes <- readRDS("datasets/Orthofinder_Mus-Acomys_1to1_orthologs_wSymbols.RData") %>%
+  select(Mus_EnsID, Gene_symbol)
+
+ecm_gene_set <- read.delim("datasets/Mouse_ECM_gene_set_mousemine.tsv", header = FALSE) %>%
+  select(V2, V3) %>%
+  rename(Gene_symbol = V2, Gene_name = V3)
+
+deseq2_results_tomoseq <- read.delim("datasets/DESeq2_output_Tomoseq_fibrotic_MMvAC.tsv") %>%
+  select(log2FoldChange, padj) %>%
+  rownames_to_column("Mus_EnsID") %>%
+  inner_join(., ortholog_genes, by = join_by(Mus_EnsID)) %>%
+  mutate(
+      neg_log_padj = -log10(padj),
+      neg_log_padj = round(pmin(neg_log_padj, 50), 2),
+      log2FoldChange = round(log2FoldChange, 2),
+      significance = if_else(neg_log_padj >= 1.3 & log2FoldChange > 0.4, "sig_up", "not_sig"),
+      significance = if_else(neg_log_padj >= 1.3 & log2FoldChange < -0.4, "sig_down", significance)
+      ) %>%
+  select(-padj)
+
+deseq2_results_fb <- read.delim("datasets/DESeq2_output_invitro_tensile_MMvAC.tsv") %>%
+  select(log2FoldChange, padj) %>%
+  rownames_to_column("Mus_EnsID") %>%
+  inner_join(., ortholog_genes, by = join_by(Mus_EnsID)) %>%
+  mutate(
+      neg_log_padj = -log10(padj),
+      neg_log_padj = round(pmin(neg_log_padj, 50), 2),
+      log2FoldChange = round(log2FoldChange, 2),
+      significance = if_else(neg_log_padj >= 1.3 & log2FoldChange > 0.4, "sig_up", "not_sig"),
+      significance = if_else(neg_log_padj >= 1.3 & log2FoldChange < -0.4, "sig_down", significance)
+      ) %>%
+  select(-padj)
+```
+
+
+Define some specific subsets of gene symbols
+```{r}
+ecm_structural_genes <- c(
+  "Ltbp1",   # latent TGF-beta binding protein 1 (ECM/microfibril component)
+  "Ltbp2",   # latent TGF-beta binding protein 2
+  "Plod3",   # procollagen-lysine, 2-oxoglutarate 5-dioxygenase 3 (collagen modification)
+  "Fbln1",   # fibulin 1 (ECM glycoprotein)
+  "Plod1",   # procollagen-lysine, 2-oxoglutarate 5-dioxygenase 1 (collagen modification)
+  "Lama2",   # laminin, alpha 2 (basement membrane structural protein)
+  "Dcn",     # decorin (small leucine-rich proteoglycan)
+  "Fbln5",   # fibulin 5
+  "Aspn",    # asporin (small leucine-rich proteoglycan)
+  "Ogn",     # osteoglycin (small leucine-rich proteoglycan)
+  "Nid2",    # nidogen 2 (basement membrane glycoprotein)
+  "Bmp1",    # bone morphogenetic protein 1 (procollagen C-proteinase)
+  "Thbs2",   # thrombospondin 2 (ECM glycoprotein)
+  "Emilin2", # elastin microfibril interfacer 2
+  "Lox",     # lysyl oxidase (collagen/elastin crosslinking enzyme)
+  "Efemp2",  # fibulin-like ECM protein 2 (a.k.a. fibulin-4)
+  "Ltbp3",   # latent TGF-beta binding protein 3
+  "Fn1",     # fibronectin 1
+  "Lamc1",   # laminin, gamma 1
+  "Dpt",     # dermatopontin (collagen fibrillogenesis regulator)
+  "Fbn1",    # fibrillin 1 (microfibril scaffold)
+  "Postn",   # periostin (promotes collagen fibrillogenesis)
+  "Ecm1",    # extracellular matrix protein 1
+  "P3h1",    # prolyl 3-hydroxylase 1 (collagen modification)
+  "Hspg2",   # perlecan (basement membrane heparan sulfate proteoglycan)
+  "Tinagl1", # tubulointerstitial nephritis antigen-like 1 (basement membrane glycoprotein)
+  "Emilin1", # elastin microfibril interfacer 1
+  "Eln",     # elastin
+  "Mfap5",   # microfibrillar-associated protein 5
+  "Mgp",     # matrix Gla protein
+  "Bgn",     # biglycan (small leucine-rich proteoglycan)
+  "Comp",    # cartilage oligomeric matrix protein
+  "Loxl1",   # lysyl oxidase-like 1 (collagen/elastin crosslinking enzyme)
+  "Plod2",   # procollagen-lysine, 2-oxoglutarate 5-dioxygenase 2
+  "Tnxb",    # tenascin XB (large ECM glycoprotein)
+  "Tgfbi",   # TGF-beta–induced (BIGH3) – an ECM structural protein
+  "Adamtsl2",# ADAMTS-like 2 (ECM organization)
+  "Lum",     # lumican (small leucine-rich proteoglycan)
+  "Spon2",   # spondin 2 (ECM protein)
+  "Tgm2",    # transglutaminase 2 (crosslinking enzyme in ECM)
+  "Thbs1",   # thrombospondin 1
+  "Ltbp4",   # latent TGF-beta binding protein 4
+  "Mmrn2",   # multimerin 2 (ECM glycoprotein)
+  "Fmod",    # fibromodulin (small leucine-rich proteoglycan)
+  "Prelp",   # proline/arginine-rich end leucine-rich repeat protein
+  "Vwa1",    # von Willebrand factor A domain containing 1 (aka AMACO, ECM adhesion molecule)
+  "Cilp",    # cartilage intermediate layer protein
+  "Mfap4",   # microfibrillar-associated protein 4
+  "Lamb2",   # laminin, beta 2
+  "Mfap2",   # microfibrillar-associated protein 2
+  "Fbln2",    # fibulin 2
+  "Ccdc80",
+  "Abi3bp",
+  "Sparc",
+  "Sparcl1",
+  "Svep1",
+  "Dag1",
+  "Cthrc1"
+)
+```
+
+
+Create gene subsets from the ECM gene set 
+```{r}
+de_ecm_gene_set <- deseq2_results %>%
+  inner_join(., ecm_gene_set, join_by(Gene_symbol))
+
+collagen_de_genes <- de_ecm_gene_set %>%
+  filter(str_starts(Gene_symbol, "Col")) %>%
+  pull(Gene_symbol)
+
+mmp_de_genes <- de_ecm_gene_set %>%
+  filter(str_detect(Gene_name, "metallo")) %>%
+  pull(Gene_symbol)
+
+structural_de_genes <- de_ecm_gene_set %>%
+  filter(
+    Gene_symbol %in% ecm_structural_genes,
+    !Gene_symbol %in% c(collagen_de_genes, mmp_de_genes)
+    ) %>%
+  pull(Gene_symbol)
+
+other_ecm_de_genes <- de_ecm_gene_set %>%
+  filter(!Gene_symbol %in% c(collagen_de_genes, mmp_de_genes, structural_de_genes)) %>%
+  pull(Gene_symbol)
+```
+
+
+Functions
+```{r}
+# Function to define the plot theme
+plot_theme_settings <- function() {
+  list(
+    # Theme elements
+    theme_bw(),
+    theme(
+      # x axis
+      axis.title.x = element_markdown(size = 14),
+      axis.text.x = element_text(angle = 0, size = 12, face = "bold"),
+      
+      # y axis
+      axis.title.y = element_markdown(size = 14),
+      axis.text.y = element_text(size = 12, face = "bold"),
+      
+      # Legend
+      legend.title = element_blank(),
+      legend.text = element_markdown(size = 12)
+      ),
+    
+    # Adjust the size of the legend elements
+    guides(color = guide_legend(override.aes = list(size = 4)))
+  )
+}
+
+# Volcano plot for the general results
+create_volcano <- function(data) {
+  
+  plot_data <- data %>%
+    mutate(
+      # Convert significance to factor with specific order
+      significance = factor(
+        significance, 
+        levels = c("sig_down", "not_sig", "sig_up"),
+        labels = c("A.cahirinus upregulated", "Not significant", "M. musculus upregulated")
+        )
+     
+    )
+  
+  vplot <- ggplot(data = plot_data, 
+                  aes(x = log2FoldChange, y = neg_log_padj, col = significance)) +
+    
+    geom_point(aes(colour = significance)) +
+
+    # Set color based on significance
+    scale_color_manual(
+      values = c(
+        "A.cahirinus upregulated" = "#B17AA0",  
+        "Not significant" = "grey",              
+        "M. musculus upregulated" = "#5A8BB7" 
+      ),
+      # Custom legend text
+      labels = c(
+        "A.cahirinus upregulated" = "<i>A.cahirinus</i> UP",
+        "Not significant" = "NS",                        
+        "M. musculus upregulated" = "<i>M. musculus</i> UP"
+      )) +
+    
+    # Horizontal and vertical lines
+    geom_vline(xintercept = c(-0.4, 0.4), col = "gray30", linetype = 'dashed', linewidth = 0.5) +
+    geom_hline(yintercept = 1.3, col = "gray30", linetype = 'dashed', linewidth = 0.5) +
+    
+    # Label the gene subset
+    labs(
+      x = "log<sub>2</sub>FC",
+      y = "-log<sub>10</sub>(p)") +
+    
+    plot_theme_settings()
+  
+  return(vplot)
+}
+
+# Function to create a volcano plot
+create_volcano_whighlights <- function(data, selected_genes, y_max, x_min, x_max) {
+  
+  plot_data <- data %>%
+    mutate(
+      selected_genes_label = if_else(Gene_symbol %in% selected_genes, Gene_symbol, NA),
+       # Convert significance to factor with specific order
+      significance = factor(
+        significance, 
+        levels = c("sig_down", "not_sig", "sig_up"),
+        labels = c("A.cahirinus upregulated", "Not significant", "M. musculus upregulated")
+        )
+     
+    )
+  
+  vplot <- ggplot(data = plot_data, 
+                  aes(x = log2FoldChange, y = neg_log_padj, col = significance)) +
+    
+    geom_point(data = subset(plot_data, neg_log_padj < 50), size = 1.5, alpha = 0.3) +
+    geom_point(data = subset(plot_data, neg_log_padj == 50), size = 1, alpha = 0.1) +
+    
+    geom_point(data = subset(plot_data, !is.na(selected_genes_label) & significance != "Not significant"),
+               aes(fill = significance),
+               size = 2, 
+               alpha = 1, 
+               shape = 21,  # This creates a filled circle with border
+               stroke = 0.7,  # This controls the thickness of the border
+               color = "black" # This sets the border color
+               ) +
+    
+    scale_fill_manual(
+      values = c(
+        "A.cahirinus upregulated" = "#B17AA0", 
+        "Not significant" = "grey", 
+        "M. musculus upregulated" = "#5A8BB7" 
+        )
+      ) +
+
+    # Set color based on significance
+    scale_color_manual(
+      values = c(
+        "A.cahirinus upregulated" = "#B17AA0",  
+        "Not significant" = "grey",              
+        "M. musculus upregulated" = "#5A8BB7" 
+      )) +
+    
+    geom_text_repel(data = subset(plot_data, !is.na(selected_genes_label)),
+                    aes(x = log2FoldChange, y = neg_log_padj, label = selected_genes_label,
+                        color = I(ifelse(significance == "M. musculus upregulated", "#1E276D", 
+                                         ifelse(significance == "A.cahirinus upregulated", "#5D1161", "grey42")))
+                        ),
+                    size = 3.7,
+                    inherit.aes = FALSE,
+                    fontface = "bold",
+                    segment.size = 0.4,
+                    segment.color = "grey20",
+                    min.segment.length = 0.3,
+                    force = 0.2,
+                    box.padding = 0.25,
+                    point.padding = 0,    
+                    max.overlaps = Inf
+                    ) +
+
+    
+    # Horizontal and vertical lines
+    geom_vline(xintercept = c(-0.4, 0.4), col = "gray30", linetype = 'dashed', linewidth = 0.5) +
+    geom_hline(yintercept = 1.3, col = "gray30", linetype = 'dashed', linewidth = 0.5) +
+    
+    # Set axis scale
+    coord_cartesian(ylim = c(0, y_max), xlim = c(x_min, x_max)) +
+    scale_x_continuous(breaks = round(seq(x_min, x_max, 2))) +
+    
+    # Label the gene subset
+    labs(
+      x = "log<sub>2</sub>FC",
+      y = "-log<sub>10</sub>(p)") +
+    
+    plot_theme_settings()
+  
+  return(vplot)
+}
+```
+
+Create a volcano plot for general DE results
+```{r}
+general_vplot_tomoseq <- create_volcano(data = deseq2_results_tomoseq)
+general_vplot_fb <- create_volcano(data = deseq2_results_fb)
+
+ggsave("General_volcano_tomoseq.png", 
+       plot = general_vplot_tomoseq,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+
+ggsave("General_volcano_FB.png", 
+       plot = general_vplot_fb,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+```
+
+Create the plots with highlighted genes
+```{r}
+max_log2fc <- max(deseq2_results$log2FoldChange)
+min_log2fc <- min(deseq2_results$log2FoldChange)
+max_padj <- 50
+
+collagen_vplot <- create_volcano_whighlights(
+  data = deseq2_results, 
+  selected_genes = collagen_de_genes, 
+  y_max = max_padj, 
+  x_max = max_log2fc, 
+  x_min = min_log2fc
+  )
+
+mmp_vplot <- create_volcano_whighlights(
+  data = deseq2_results, 
+  selected_genes = mmp_de_genes, 
+  y_max = max_padj, 
+  x_max = max_log2fc, 
+  x_min = min_log2fc
+  )
+
+structural_vplot <- create_volcano_whighlights(
+  data = deseq2_results, 
+  selected_genes = structural_de_genes, 
+  y_max = max_padj, 
+  x_max = max_log2fc, 
+  x_min = min_log2fc
+  )
+
+other_ecm_vplot <- create_volcano_whighlights(
+  data = deseq2_results, 
+  selected_genes = other_ecm_de_genes, 
+  y_max = max_padj, 
+  x_max = max_log2fc, 
+  x_min = min_log2fc
+  )
+
+ggsave("Collagen_volcano.png", 
+       plot = collagen_vplot,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+
+ggsave("structural_volcano.png", 
+       plot = structural_vplot,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+
+ggsave("mmp_volcano.png", 
+       plot = mmp_vplot,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+
+ggsave("other_ecm_volcano.png", 
+       plot = other_ecm_vplot,
+       width = 10,      # width in inches
+       height = 8,      # height in inches
+       dpi = 300)
+```
+
+
+
